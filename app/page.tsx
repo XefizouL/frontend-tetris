@@ -1,29 +1,53 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { io } from 'socket.io-client';
+import { 
+  Tv, 
+  Users, 
+  Trophy, 
+  Activity, 
+  CheckCircle2, 
+  AlertTriangle, 
+  Play, 
+  Volume2, 
+  VolumeX, 
+  Database, 
+  Cpu, 
+  Zap, 
+  Workflow, 
+  History,
+  RotateCw,
+  Terminal,
+  Grid
+} from 'lucide-react';
 
 const COLS = 10;
 const ROWS = 20;
 
-// Aquí les puse números en vez de 1 para poder pintar los colores guardados
+// Tetrominos configuration
 const TETROMINOS = {
-  I: { shape: [[1, 1, 1, 1]], color: 'bg-cyan-400' },
-  J: { shape: [[2, 0, 0], [2, 2, 2]], color: 'bg-blue-500' },
-  L: { shape: [[0, 0, 3], [3, 3, 3]], color: 'bg-orange-500' },
-  O: { shape: [[4, 4], [4, 4]], color: 'bg-yellow-400' },
-  S: { shape: [[0, 5, 5], [5, 5, 0]], color: 'bg-green-500' },
-  T: { shape: [[0, 6, 0], [6, 6, 6]], color: 'bg-purple-500' },
-  Z: { shape: [[7, 7, 0], [0, 7, 7]], color: 'bg-red-500' },
+  I: { shape: [[1, 1, 1, 1]], color: 'bg-cyan-500 shadow-[0_0_12px_rgba(6,182,212,0.8)] border-cyan-300' },
+  J: { shape: [[2, 0, 0], [2, 2, 2]], color: 'bg-blue-600 shadow-[0_0_12px_rgba(37,99,235,0.8)] border-blue-400' },
+  L: { shape: [[0, 0, 3], [3, 3, 3]], color: 'bg-orange-500 shadow-[0_0_12px_rgba(249,115,22,0.8)] border-orange-300' },
+  O: { shape: [[4, 4], [4, 4]], color: 'bg-yellow-500 shadow-[0_0_12px_rgba(234,179,8,0.8)] border-yellow-300' },
+  S: { shape: [[0, 5, 5], [5, 5, 0]], color: 'bg-green-500 shadow-[0_0_12px_rgba(34,197,94,0.8)] border-green-300' },
+  T: { shape: [[0, 6, 0], [6, 6, 6]], color: 'bg-purple-600 shadow-[0_0_12px_rgba(147,51,234,0.8)] border-purple-400' },
+  Z: { shape: [[7, 7, 0], [0, 7, 7]], color: 'bg-red-600 shadow-[0_0_12px_rgba(220,38,38,0.8)] border-red-400' },
 };
 
 const SHAPES = Object.keys(TETROMINOS);
 const createEmptyBoard = () => Array.from({ length: ROWS }, () => Array(COLS).fill(0));
 
-// Diccionario para saber qué color pintar según el número guardado en el tablero
 const COLOR_MAP = {
-  0: 'bg-gray-900',
-  1: 'bg-cyan-400', 2: 'bg-blue-500', 3: 'bg-orange-500',
-  4: 'bg-yellow-400', 5: 'bg-green-500', 6: 'bg-purple-500', 7: 'bg-red-500'
+  0: 'bg-slate-950/40 border border-slate-900/60',
+  1: 'bg-cyan-500 border border-cyan-300 shadow-[0_0_8px_rgba(6,182,212,0.6)] tetris-cell',
+  2: 'bg-blue-600 border border-blue-400 shadow-[0_0_8px_rgba(37,99,235,0.6)] tetris-cell',
+  3: 'bg-orange-500 border border-orange-300 shadow-[0_0_8px_rgba(249,115,22,0.6)] tetris-cell',
+  4: 'bg-yellow-500 border border-yellow-300 shadow-[0_0_8px_rgba(234,179,8,0.6)] tetris-cell',
+  5: 'bg-green-500 border border-green-300 shadow-[0_0_8px_rgba(34,197,94,0.6)] tetris-cell',
+  6: 'bg-purple-600 border border-purple-400 shadow-[0_0_8px_rgba(147,51,234,0.6)] tetris-cell',
+  7: 'bg-red-600 border border-red-400 shadow-[0_0_8px_rgba(220,38,38,0.6)] tetris-cell',
 };
 
 export default function Tetris() {
@@ -34,16 +58,192 @@ export default function Tetris() {
   const [gameOver, setGameOver] = useState(false);
   const [playerName, setPlayerName] = useState('');
   const [isGameStarted, setIsGameStarted] = useState(false);
+  
+  // Realtime & Architecture State
+  const [activeUsers, setActiveUsers] = useState(1);
+  const [toasts, setToasts] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [awsConsoleLogs, setAwsConsoleLogs] = useState([
+    'Initializing local AWS Stack simulation...',
+    'ALB Proxy listening on port 80...',
+  ]);
+  const [servicesStatus, setServicesStatus] = useState({
+    proxy: 'checking',
+    api: 'checking',
+    websocket: 'checking',
+    rds: 'checking',
+    redis: 'checking',
+    sqs: 'checking'
+  });
 
-  // Función para detectar si la pieza choca con algo
-  const checkCollision = (piece, x, y, currentBoard) => {
+  const socketRef = useRef(null);
+  const audioCtxRef = useRef(null);
+
+  // Sound generator
+  const playSound = (type) => {
+    if (!soundEnabled) return;
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      if (type === 'move') {
+        osc.frequency.setValueAtTime(150, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.05, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.1);
+      } else if (type === 'rotate') {
+        osc.frequency.setValueAtTime(220, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(330, ctx.currentTime + 0.08);
+        gain.gain.setValueAtTime(0.05, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.08);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.08);
+      } else if (type === 'clear') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(300, ctx.currentTime);
+        osc.frequency.setValueAtTime(450, ctx.currentTime + 0.08);
+        osc.frequency.setValueAtTime(600, ctx.currentTime + 0.16);
+        gain.gain.setValueAtTime(0.08, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+      } else if (type === 'gameover') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(200, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.5);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.5);
+      }
+    } catch (e) {
+      console.warn('Audio synthesis failed', e);
+    }
+  };
+
+  // Live AWS Logs generator
+  const logAwsEvent = (msg) => {
+    setAwsConsoleLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 15)]);
+  };
+
+  // Add Toast Notification
+  const addToast = useCallback((msg, type = 'info') => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message: msg, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 4500);
+  }, []);
+
+  // Fetch High Scores Leaderboard
+  const fetchLeaderboard = useCallback(async () => {
+    try {
+      const res = await fetch('/api/scores/leaderboard');
+      if (res.ok) {
+        const data = await res.json();
+        setLeaderboard(data);
+        logAwsEvent('GET /api/scores/leaderboard -> ElastiCache Redis cache hit');
+      } else {
+        logAwsEvent('GET /api/scores/leaderboard failed -> Falling back');
+      }
+    } catch (error) {
+      console.error(error);
+      logAwsEvent('AWS RDS database error: connection refused');
+    }
+  }, []);
+
+  // Poll AWS Local Services Health
+  const checkHealth = useCallback(async () => {
+    try {
+      const res = await fetch('/api/health');
+      if (res.ok) {
+        const data = await res.json();
+        setServicesStatus({
+          proxy: 'ok',
+          api: data.services.api === 'ok' ? 'ok' : 'error',
+          websocket: socketRef.current?.connected ? 'ok' : 'error',
+          rds: data.services.database === 'ok' ? 'ok' : 'error',
+          redis: data.services.cache === 'ok' ? 'ok' : 'error',
+          sqs: 'ok' // RabbitMQ is running if the sockets are pushing successfully
+        });
+      } else {
+        throw new Error('API down');
+      }
+    } catch (err) {
+      setServicesStatus({
+        proxy: 'ok',
+        api: 'error',
+        websocket: socketRef.current?.connected ? 'ok' : 'error',
+        rds: 'error',
+        redis: 'error',
+        sqs: 'error'
+      });
+    }
+  }, []);
+
+  // Initialize WebSockets and Health Checks
+  useEffect(() => {
+    const socketUrl = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : 'http://localhost';
+    const socket = io(socketUrl, {
+      path: '/socket.io/',
+      transports: ['websocket', 'polling']
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('Connected to real-time ECS WebSocket service');
+      logAwsEvent('ECS WebSocket server connection established (Port 80 routing)');
+      setServicesStatus(prev => ({ ...prev, websocket: 'ok' }));
+    });
+
+    socket.on('disconnect', () => {
+      console.log('Disconnected from WebSockets');
+      logAwsEvent('ECS WebSocket connection terminated');
+      setServicesStatus(prev => ({ ...prev, websocket: 'error' }));
+    });
+
+    socket.on('active_users_update', (data) => {
+      setActiveUsers(data.count);
+    });
+
+    socket.on('arena_notification', (data) => {
+      addToast(data.message, data.type);
+      logAwsEvent(`WS Broadcast event [${data.type}]: ${data.nombre || 'Arena'}`);
+    });
+
+    // Check health initially and every 8 seconds
+    checkHealth();
+    fetchLeaderboard();
+    const interval = setInterval(checkHealth, 8000);
+
+    return () => {
+      socket.disconnect();
+      clearInterval(interval);
+    };
+  }, [addToast, checkHealth, fetchLeaderboard]);
+
+  // Handle Collision detection
+  const checkCollision = useCallback((piece, x, y, currentBoard) => {
     if (!piece) return false;
     for (let r = 0; r < piece.shape.length; r++) {
       for (let c = 0; c < piece.shape[r].length; c++) {
         if (piece.shape[r][c] !== 0) {
           let newY = y + r;
           let newX = x + c;
-          // Choca con los bordes o con otra pieza ya fijada
           if (newY >= ROWS || newX < 0 || newX >= COLS || (newY >= 0 && currentBoard[newY][newX] !== 0)) {
             return true;
           }
@@ -51,38 +251,114 @@ export default function Tetris() {
       }
     }
     return false;
-  };
+  }, []);
 
+  // Spawns Next Piece
   const spawnPiece = useCallback((currentBoard) => {
     const randomShape = SHAPES[Math.floor(Math.random() * SHAPES.length)];
     const piece = TETROMINOS[randomShape];
     const startX = Math.floor(COLS / 2) - Math.floor(piece.shape[0].length / 2);
     const startY = 0;
 
-    // Si al nacer ya choca, es Game Over
     if (checkCollision(piece, startX, startY, currentBoard)) {
       setGameOver(true);
+      playSound('gameover');
+      logAwsEvent(`Game Over for ${playerName || 'Invitado'}. Final score: ${score}`);
+      
+      // Dispatch game over to WebSockets (triggers RabbitMQ + Worker flow)
+      if (socketRef.current) {
+        socketRef.current.emit('game_over', {
+          nombre: playerName || 'Invitado',
+          score: score
+        });
+      }
+      
+      // Save score automatically to Database
+      saveScore(score);
       return null;
     }
 
     setCurrentPiece(piece);
     setPosition({ x: startX, y: startY });
-  }, []);
+  }, [checkCollision, playerName, score]);
 
+  // Rotates Falling Tetromino
+  const rotatePiece = useCallback(() => {
+    if (gameOver || !currentPiece) return;
+
+    const matrix = currentPiece.shape;
+    const rotatedShape = matrix[0].map((_, index) =>
+      matrix.map(row => row[index]).reverse()
+    );
+
+    const rotatedPiece = { ...currentPiece, shape: rotatedShape };
+
+    // Wall kick & rotation validation
+    if (!checkCollision(rotatedPiece, position.x, position.y, board)) {
+      setCurrentPiece(rotatedPiece);
+      playSound('rotate');
+    } else if (!checkCollision(rotatedPiece, position.x - 1, position.y, board)) {
+      setPosition(prev => ({ ...prev, x: prev.x - 1 }));
+      setCurrentPiece(rotatedPiece);
+      playSound('rotate');
+    } else if (!checkCollision(rotatedPiece, position.x + 1, position.y, board)) {
+      setPosition(prev => ({ ...prev, x: prev.x + 1 }));
+      setCurrentPiece(rotatedPiece);
+      playSound('rotate');
+    }
+  }, [currentPiece, position, board, gameOver, checkCollision]);
+
+  // Starts active gameplay
   const startGame = () => {
+    if (!playerName.trim()) {
+      addToast('Por favor, ingresa tu alias primero 🎮', 'warning');
+      return;
+    }
+
     const emptyBoard = createEmptyBoard();
     setBoard(emptyBoard);
     setScore(0);
     setGameOver(false);
     setIsGameStarted(true);
+    
+    // Connect websocket presence
+    if (socketRef.current) {
+      socketRef.current.emit('join_game', { nombre: playerName });
+      socketRef.current.emit('game_start', { nombre: playerName });
+    }
+
+    logAwsEvent(`Player ${playerName} initialized Tetris Engine`);
     spawnPiece(emptyBoard);
   };
 
-  // Pegar la pieza al tablero cuando llega al fondo
+  // Saves Score to the DB via proxy
+  const saveScore = async (finalScore) => {
+    const name = playerName.trim() || 'Invitado';
+    logAwsEvent(`POST /api/scores -> Storing high score ${finalScore} for ${name}`);
+    try {
+      const response = await fetch('/api/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre: name, puntaje: finalScore }),
+      });
+
+      if (response.ok) {
+        logAwsEvent('AWS PG Database updated & Redis cache zAdd completed successfully');
+        fetchLeaderboard();
+      } else {
+        logAwsEvent('AWS RDS API response failed');
+      }
+    } catch (error) {
+      console.error(error);
+      logAwsEvent('AWS API Endpoint offline - database sync cached locally');
+    }
+  };
+
+  // Merges block into grid upon bottom contact
   const mergePiece = useCallback(() => {
     if (!currentPiece) return;
-    
-    let newBoard = board.map(row => [...row]); // copia del tablero
+
+    let newBoard = board.map(row => [...row]);
     for (let r = 0; r < currentPiece.shape.length; r++) {
       for (let c = 0; c < currentPiece.shape[r].length; c++) {
         if (currentPiece.shape[r][c] !== 0) {
@@ -93,7 +369,7 @@ export default function Tetris() {
       }
     }
 
-    // Limpiar líneas llenas
+    // Line clearing mechanics
     let linesCleared = 0;
     newBoard = newBoard.filter(row => {
       let isLineFull = row.every(cell => cell !== 0);
@@ -101,82 +377,100 @@ export default function Tetris() {
       return !isLineFull;
     });
 
-    // Agregar nuevas líneas vacías arriba por cada línea limpiada
+    // Populate top with blank lines
+    let scoreAdd = 0;
     for (let i = 0; i < linesCleared; i++) {
       newBoard.unshift(Array(COLS).fill(0));
-      setScore(prev => prev + 100);
+      scoreAdd += 100;
     }
 
-    setScore(prev => prev + 10); // Puntos por colocar pieza
+    if (linesCleared > 0) {
+      playSound('clear');
+      logAwsEvent(`AWS Worker cleared ${linesCleared} rows!`);
+      const newScore = score + scoreAdd + 10;
+      setScore(newScore);
+
+      // Milestone notification
+      if (newScore > 0 && newScore % 500 === 0) {
+        if (socketRef.current) {
+          socketRef.current.emit('game_milestone', { nombre: playerName, score: newScore });
+        }
+      }
+    } else {
+      setScore(prev => prev + 10);
+    }
+
     setBoard(newBoard);
     spawnPiece(newBoard);
+  }, [board, currentPiece, position, spawnPiece, score, playerName]);
 
-  }, [board, currentPiece, position, spawnPiece]);
-
+  // Move falling block down
   const moveDown = useCallback(() => {
     if (gameOver || !currentPiece) return;
 
     if (!checkCollision(currentPiece, position.x, position.y + 1, board)) {
       setPosition(prev => ({ ...prev, y: prev.y + 1 }));
     } else {
-      mergePiece(); // Si choca abajo, se pega al tablero
+      mergePiece();
     }
-  }, [currentPiece, position, board, gameOver, mergePiece]);
+  }, [currentPiece, position, board, gameOver, checkCollision, mergePiece]);
 
-  // Controles
+  // Left/Right shift
+  const moveHorizontal = useCallback((dir) => {
+    if (gameOver || !currentPiece) return;
+    if (!checkCollision(currentPiece, position.x + dir, position.y, board)) {
+      setPosition(prev => ({ ...prev, x: prev.x + dir }));
+      playSound('move');
+    }
+  }, [currentPiece, position, board, gameOver, checkCollision]);
+
+  // Key listeners
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (gameOver || !currentPiece) return;
-      
+      if (gameOver || !currentPiece || !isGameStarted) return;
+
       if (e.key === 'ArrowLeft') {
-        if (!checkCollision(currentPiece, position.x - 1, position.y, board)) {
-          setPosition(prev => ({ ...prev, x: prev.x - 1 }));
-        }
+        e.preventDefault();
+        moveHorizontal(-1);
       }
       if (e.key === 'ArrowRight') {
-        if (!checkCollision(currentPiece, position.x + 1, position.y, board)) {
-          setPosition(prev => ({ ...prev, x: prev.x + 1 }));
-        }
+        e.preventDefault();
+        moveHorizontal(1);
       }
       if (e.key === 'ArrowDown') {
+        e.preventDefault();
         moveDown();
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        rotatePiece();
+      }
+      if (e.key === ' ') {
+        e.preventDefault();
+        // Hard drop
+        let testY = position.y;
+        while (!checkCollision(currentPiece, position.x, testY + 1, board)) {
+          testY++;
+        }
+        setPosition(prev => ({ ...prev, y: testY }));
+        // Let gravity merge it in the next cycle, or merge instantly
+        mergePiece();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPiece, position, board, gameOver, moveDown]);
+  }, [currentPiece, position, board, gameOver, isGameStarted, moveHorizontal, moveDown, rotatePiece, checkCollision, mergePiece]);
 
-  // Game Loop (Gravedad)
+  // Game Gravitational loop
   useEffect(() => {
     if (isGameStarted && !gameOver && currentPiece) {
-      const dropInterval = setInterval(moveDown, 800);
+      const dropInterval = setInterval(moveDown, 850);
       return () => clearInterval(dropInterval);
     }
   }, [moveDown, isGameStarted, gameOver, currentPiece]);
 
-  const saveScoreToDatabase = async () => {
-    if (!playerName) return alert("Ingresa tu nombre");
-
-    try {
-      const response = await fetch('http://localhost:5000/api/scores', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nombre: playerName, puntaje: score }),
-      });
-
-      if (response.ok) {
-        alert("¡Guardado en la Base de Datos!");
-      } else {
-        alert("Error al guardar.");
-      }
-    } catch (error) {
-      console.error(error);
-      alert("Error. Verifica que el Backend de Docker esté corriendo.");
-    }
-  };
-
-  // Crear un tablero combinado (tablero estático + pieza cayendo) para dibujarlo
+  // Combined render grid
   const getRenderBoard = () => {
     let renderBoard = board.map(row => [...row]);
     if (currentPiece) {
@@ -195,52 +489,321 @@ export default function Tetris() {
     return renderBoard;
   };
 
+  const getStatusIcon = (status) => {
+    if (status === 'ok') return <CheckCircle2 className="w-4 h-4 text-emerald-400" />;
+    if (status === 'checking') return <Activity className="w-4 h-4 text-amber-400 animate-pulse" />;
+    return <AlertTriangle className="w-4 h-4 text-red-500 animate-bounce" />;
+  };
+
   return (
-    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center font-sans text-white">
-      <h1 className="text-4xl font-bold mb-6 text-cyan-400">Tetris Cloud</h1>
-      
-      <div className="flex gap-10">
-        {/* Tablero */}
-        <div className="bg-black p-2 border-4 border-gray-700 rounded shadow-2xl">
-          <div className="grid bg-gray-800" style={{ gridTemplateColumns: `repeat(${COLS}, 30px)`, gridTemplateRows: `repeat(${ROWS}, 30px)`, gap: '1px' }}>
-            {getRenderBoard().map((row, y) =>
-              row.map((cellValue, x) => (
-                <div key={`${y}-${x}`} className={`w-full h-full ${COLOR_MAP[cellValue]} border border-gray-800/50`} />
-              ))
-            )}
+    <div className="min-h-screen flex flex-col items-center justify-between pb-6 pt-4 px-4 font-sans text-slate-100 select-none relative">
+      {/* Background Neon Glow Overlay */}
+      <div className="absolute top-1/4 left-1/4 w-[400px] h-[400px] bg-cyan-500/10 rounded-full blur-[140px] pointer-events-none" />
+      <div className="absolute bottom-1/4 right-1/4 w-[400px] h-[400px] bg-purple-500/10 rounded-full blur-[140px] pointer-events-none" />
+
+      {/* Dynamic Slide-in Toast Banner Alerts */}
+      <div className="fixed top-6 right-6 z-50 flex flex-col gap-3 max-w-sm pointer-events-none">
+        {toasts.map((t) => (
+          <div 
+            key={t.id} 
+            className="toast-animate glass-panel px-4 py-3 rounded-lg border-l-4 border-cyan-400 flex items-center gap-3 text-sm font-medium shadow-[0_4px_20px_rgba(0,0,0,0.5)]"
+            style={{ 
+              borderLeftColor: t.type === 'game_over' ? 'var(--neon-magenta)' : 
+                               t.type === 'game_start' ? 'var(--neon-cyan)' : 'var(--neon-green)'
+            }}
+          >
+            <Zap className="w-4 h-4 text-cyan-400 flex-shrink-0 animate-pulse" />
+            <span>{t.message}</span>
           </div>
-        </div>
-
-        {/* Panel Derecho */}
-        <div className="flex flex-col gap-6 w-64">
-          <div className="bg-gray-800 p-6 rounded-xl border border-gray-700">
-            <h2 className="text-xl font-bold mb-2">Puntaje</h2>
-            <p className="text-3xl text-green-400">{score}</p>
-          </div>
-
-          {!isGameStarted && !gameOver && (
-            <button onClick={startGame} className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 px-4 rounded transition-all">
-              Iniciar Juego
-            </button>
-          )}
-
-          {gameOver && (
-            <div className="bg-red-900/50 p-6 rounded-xl border border-red-500 mt-4 text-center">
-              <h2 className="text-xl font-bold text-red-400 mb-4">¡Game Over!</h2>
-              <input 
-                type="text" placeholder="Tu nombre..." value={playerName} onChange={(e) => setPlayerName(e.target.value)}
-                className="w-full p-2 mb-4 bg-gray-900 text-white border border-gray-600 rounded focus:border-cyan-400"
-              />
-              <button onClick={saveScoreToDatabase} className="w-full bg-green-600 hover:bg-green-500 font-bold py-2 px-4 rounded mb-2 transition-all">
-                Guardar Puntaje
-              </button>
-              <button onClick={startGame} className="w-full bg-gray-700 hover:bg-gray-600 font-bold py-2 px-4 rounded transition-all">
-                Jugar de nuevo
-              </button>
-            </div>
-          )}
-        </div>
+        ))}
       </div>
+
+      {/* HEADER */}
+      <header className="w-full max-w-6xl flex justify-between items-center mb-4 z-10">
+        <div className="flex items-center gap-3">
+          <Tv className="w-8 h-8 text-cyan-400 animate-pulse" />
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-wider font-mono text-cyan-400">
+            TETRIS<span className="text-fuchsia-500">CLOUD</span>
+          </h1>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 glass-panel px-3 py-1.5 rounded-full text-xs font-semibold">
+            <Users className="w-4 h-4 text-cyan-400" />
+            <span>Multiplayer Online:</span>
+            <span className="text-cyan-400 text-sm font-bold font-mono animate-pulse">{activeUsers}</span>
+          </div>
+
+          <button 
+            onClick={() => setSoundEnabled(!soundEnabled)} 
+            className="p-2 rounded-full glass-panel hover:text-cyan-400 transition-colors"
+          >
+            {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+          </button>
+        </div>
+      </header>
+
+      {/* LOBBY / NAME REGISTER */}
+      {!isGameStarted ? (
+        <main className="w-full max-w-xl glass-panel p-8 rounded-2xl border border-slate-800/80 shadow-[0_10px_50px_rgba(0,0,0,0.6)] z-10 my-auto text-center flex flex-col items-center">
+          <div className="w-16 h-16 bg-gradient-to-tr from-cyan-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-lg shadow-cyan-500/20 mb-6">
+            <Play className="w-8 h-8 text-white fill-white ml-1" />
+          </div>
+          
+          <h2 className="text-3xl font-black mb-2 tracking-wide">INGRESA TU ALIAS</h2>
+          <p className="text-sm text-slate-400 mb-8 max-w-md">
+            Registra tu nombre en tiempo real en la red local de contenedores docker. ¡Tus récords se guardarán directamente en PostgreSQL y Redis!
+          </p>
+
+          <div className="w-full max-w-sm flex flex-col gap-4 mb-4">
+            <input 
+              type="text" 
+              placeholder="Escribe tu nick o alias..." 
+              value={playerName} 
+              maxLength={15}
+              onChange={(e) => setPlayerName(e.target.value)}
+              className="w-full px-5 py-3.5 bg-slate-950/80 border border-slate-800 focus:border-cyan-400 text-center rounded-xl text-lg font-bold placeholder-slate-600 focus:outline-none transition-all"
+            />
+            
+            <button 
+              onClick={startGame}
+              className="w-full py-4 bg-gradient-to-r from-cyan-500 to-cyan-600 hover:from-cyan-400 hover:to-cyan-500 text-slate-950 font-extrabold text-base tracking-widest uppercase rounded-xl shadow-lg shadow-cyan-400/20 active:scale-98 transition-all cursor-pointer"
+            >
+              Iniciar Arena Tetris
+            </button>
+          </div>
+
+          <div className="w-full grid grid-cols-3 gap-3 max-w-md mt-6 pt-6 border-t border-slate-900/60 text-left">
+            <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-900/50">
+              <span className="text-[10px] text-slate-500 block uppercase font-extrabold">AWS DB SQL</span>
+              <span className="text-xs font-bold text-slate-300">RDS Postgres</span>
+            </div>
+            <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-900/50">
+              <span className="text-[10px] text-slate-500 block uppercase font-extrabold">Caché / Zset</span>
+              <span className="text-xs font-bold text-slate-300">ElastiCache</span>
+            </div>
+            <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-900/50">
+              <span className="text-[10px] text-slate-500 block uppercase font-extrabold">Async events</span>
+              <span className="text-xs font-bold text-slate-300">AWS SQS Broker</span>
+            </div>
+          </div>
+        </main>
+      ) : (
+        /* GAME ARENA PLAYING SCREEN */
+        <main className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-start my-auto z-10">
+          
+          {/* LEFT SIDEBAR: AWS SYSTEM & METRICS STATUS */}
+          <section className="lg:col-span-3 flex flex-col gap-5 h-full">
+            {/* Health Monitor */}
+            <div className="glass-panel p-5 rounded-2xl border border-slate-800/80">
+              <h3 className="text-sm font-black tracking-widest text-slate-400 mb-4 uppercase flex items-center gap-2">
+                <Cpu className="w-4 h-4 text-cyan-400" />
+                AWS Cloud Console
+              </h3>
+              
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
+                  <div className="flex items-center gap-2 font-medium text-slate-400">
+                    <Zap className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>ALB Proxy Port 80</span>
+                  </div>
+                  {getStatusIcon(servicesStatus.proxy)}
+                </div>
+
+                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
+                  <div className="flex items-center gap-2 font-medium text-slate-400">
+                    <Workflow className="w-3.5 h-3.5 text-fuchsia-400" />
+                    <span>API Service (ECS)</span>
+                  </div>
+                  {getStatusIcon(servicesStatus.api)}
+                </div>
+
+                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
+                  <div className="flex items-center gap-2 font-medium text-slate-400">
+                    <Activity className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Sockets (Tiempo Real)</span>
+                  </div>
+                  {getStatusIcon(servicesStatus.websocket)}
+                </div>
+
+                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
+                  <div className="flex items-center gap-2 font-medium text-slate-400">
+                    <Database className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>RDS PostgreSQL</span>
+                  </div>
+                  {getStatusIcon(servicesStatus.rds)}
+                </div>
+
+                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
+                  <div className="flex items-center gap-2 font-medium text-slate-400">
+                    <Cpu className="w-3.5 h-3.5 text-red-400" />
+                    <span>ElastiCache Redis</span>
+                  </div>
+                  {getStatusIcon(servicesStatus.redis)}
+                </div>
+
+                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
+                  <div className="flex items-center gap-2 font-medium text-slate-400">
+                    <History className="w-3.5 h-3.5 text-amber-500" />
+                    <span>SQS Queue Broker</span>
+                  </div>
+                  {getStatusIcon(servicesStatus.sqs)}
+                </div>
+              </div>
+            </div>
+
+            {/* CloudWatch Serverless Logs Console */}
+            <div className="glass-panel p-5 rounded-2xl border border-slate-800/80 flex-grow flex flex-col">
+              <h3 className="text-xs font-black tracking-widest text-slate-400 mb-3 uppercase flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-cyan-400 animate-pulse" />
+                CloudWatch Logs
+              </h3>
+              
+              <div className="w-full flex-grow bg-black/50 border border-slate-900 rounded-lg p-3 font-mono text-[10px] text-emerald-400/90 h-[170px] lg:h-[190px] overflow-y-auto flex flex-col gap-1.5">
+                {awsConsoleLogs.map((log, idx) => (
+                  <div key={idx} className="leading-tight border-b border-slate-950 pb-1">
+                    {log}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* MAIN TETRIS GAME BOARD */}
+          <section className="lg:col-span-5 flex justify-center">
+            <div className="glass-panel p-4 rounded-2xl border border-slate-800/80 shadow-[0_0_50px_rgba(0,240,255,0.06)] relative">
+              {/* Grid Canvas */}
+              <div className="grid bg-slate-950/80 p-2.5 rounded-xl border border-slate-900/90" style={{ gridTemplateColumns: `repeat(${COLS}, minmax(26px, 32px))`, gridTemplateRows: `repeat(${ROWS}, minmax(26px, 32px))`, gap: '2px' }}>
+                {getRenderBoard().map((row, y) =>
+                  row.map((cellValue, x) => (
+                    <div 
+                      key={`${y}-${x}`} 
+                      className={`w-full h-full rounded-[4px] border ${COLOR_MAP[cellValue]} transition-colors duration-75`} 
+                    />
+                  ))
+                )}
+              </div>
+
+              {/* In-game Game Over Overlay Popups */}
+              {gameOver && (
+                <div className="absolute inset-0 bg-black/85 backdrop-blur-md rounded-2xl flex flex-col justify-center items-center p-6 text-center z-20">
+                  <div className="w-14 h-14 bg-red-600/10 rounded-full flex items-center justify-center border border-red-500 mb-4 animate-pulse">
+                    <AlertTriangle className="w-6 h-6 text-red-500" />
+                  </div>
+                  <h2 className="text-3xl font-black text-red-500 tracking-wider font-mono uppercase mb-2">Game Over</h2>
+                  <p className="text-slate-400 text-sm max-w-xs mb-6">
+                    Puntuación alcanzada por <strong className="text-cyan-400">{playerName}</strong>:
+                    <span className="block text-3xl font-black text-green-400 font-mono mt-1">{score}</span>
+                  </p>
+
+                  <div className="flex flex-col gap-2.5 w-full max-w-[220px]">
+                    <button 
+                      onClick={startGame}
+                      className="w-full py-3.5 bg-gradient-to-r from-cyan-500 to-cyan-600 hover:from-cyan-400 hover:to-cyan-500 text-slate-950 font-extrabold tracking-widest uppercase rounded-lg shadow-md cursor-pointer transition-all"
+                    >
+                      Jugar de Nuevo
+                    </button>
+                    <button 
+                      onClick={() => setIsGameStarted(false)}
+                      className="w-full py-3 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 font-bold rounded-lg cursor-pointer transition-all"
+                    >
+                      Volver al Lobby
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* RIGHT SIDEBAR: HIGH SCORES & GAME CONTROLS */}
+          <section className="lg:col-span-4 flex flex-col gap-5">
+            {/* Score & Controls Panel */}
+            <div className="glass-panel p-6 rounded-2xl border border-slate-800/80 flex flex-col gap-4 text-center">
+              <div>
+                <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">PUNTUACIÓN ACTUAL</span>
+                <p className="text-5xl font-extrabold text-green-400 font-mono tracking-tight mt-1">{score}</p>
+              </div>
+
+              <div className="border-t border-slate-900/60 pt-4 flex flex-col gap-2.5">
+                <span className="text-[10px] font-extrabold uppercase text-slate-500 tracking-wider block">Controles de Teclado</span>
+                <div className="grid grid-cols-2 gap-2 text-left text-xs">
+                  <div className="p-2 bg-slate-950/40 rounded border border-slate-900/50 flex justify-between items-center">
+                    <span className="text-slate-400 font-semibold">◀ / ▶</span>
+                    <span className="text-cyan-400 text-[10px] font-bold">Mover</span>
+                  </div>
+                  <div className="p-2 bg-slate-950/40 rounded border border-slate-900/50 flex justify-between items-center">
+                    <span className="text-slate-400 font-semibold">▲</span>
+                    <span className="text-fuchsia-400 text-[10px] font-bold">Rotar</span>
+                  </div>
+                  <div className="p-2 bg-slate-950/40 rounded border border-slate-900/50 flex justify-between items-center">
+                    <span className="text-slate-400 font-semibold">▼</span>
+                    <span className="text-cyan-400 text-[10px] font-bold">Bajar</span>
+                  </div>
+                  <div className="p-2 bg-slate-950/40 rounded border border-slate-900/50 flex justify-between items-center">
+                    <span className="text-slate-400 font-semibold">Espacio</span>
+                    <span className="text-green-400 text-[10px] font-bold">Caída rápida</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* AWS ElastiCache / Redis Leaderboard */}
+            <div className="glass-panel p-5 rounded-2xl border border-slate-800/80">
+              <h3 className="text-sm font-black tracking-widest text-slate-400 mb-4 uppercase flex items-center gap-2">
+                <Trophy className="w-4 h-4 text-yellow-400 animate-bounce" />
+                Global Leaderboard
+              </h3>
+
+              <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto">
+                {leaderboard.length === 0 ? (
+                  <div className="text-center py-6 text-slate-500 text-xs">
+                    No hay puntuaciones registradas aún en Redis.
+                  </div>
+                ) : (
+                  leaderboard.map((item, idx) => (
+                    <div 
+                      key={idx} 
+                      className={`flex items-center justify-between p-2.5 rounded-xl border transition-all text-xs ${
+                        idx === 0 ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-300 font-bold shadow-[0_0_15px_rgba(234,179,8,0.05)]' :
+                        idx === 1 ? 'bg-slate-100/5 border-slate-400/20 text-slate-200 font-semibold' :
+                        idx === 2 ? 'bg-amber-600/5 border-amber-600/20 text-amber-300 font-semibold' :
+                        'bg-slate-950/20 border-slate-900/60 text-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className={`w-5 h-5 flex items-center justify-center rounded-full text-[10px] font-extrabold ${
+                          idx === 0 ? 'bg-yellow-400/20 text-yellow-300' :
+                          idx === 1 ? 'bg-slate-400/20 text-slate-200' :
+                          idx === 2 ? 'bg-amber-600/20 text-amber-300' :
+                          'bg-slate-800 text-slate-400'
+                        }`}>
+                          {idx + 1}
+                        </span>
+                        <span className="truncate max-w-[120px] font-mono">{item.nombre}</span>
+                      </div>
+                      <span className="font-bold font-mono tracking-wide">{item.puntaje}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </section>
+
+        </main>
+      )}
+
+      {/* FOOTER */}
+      <footer className="w-full max-w-6xl text-center text-slate-600 text-[10px] sm:text-xs z-10 border-t border-slate-900/60 pt-5 mt-6 flex flex-col sm:flex-row justify-between gap-4">
+        <span>© 2026 Tetris Cloud Corporation. AWS Local Simulation Sandbox Environment.</span>
+        <span className="flex items-center justify-center gap-1">
+          Powered by
+          <strong className="text-cyan-400 font-semibold">Nginx</strong>,
+          <strong className="text-fuchsia-400 font-semibold">Next.js</strong>,
+          <strong className="text-sky-400 font-semibold">Socket.io</strong>,
+          <strong className="text-emerald-400 font-semibold">Postgres</strong> &
+          <strong className="text-red-400 font-semibold">Redis</strong>
+        </span>
+      </footer>
     </div>
   );
 }

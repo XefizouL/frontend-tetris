@@ -1,0 +1,15 @@
+{
+  "name": "tetris-websocket",
+  "version": "1.0.0",
+  "description": "WebSocket Server in Socket.io for AWS Tetris local simulation",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4",
+    "dotenv": "^16.4.5",
+    "redis": "^4.6.13",
+    "socket.io": "^4.7.5"
+  }
+}
