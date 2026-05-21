@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { io } from 'socket.io-client';
+import Link from 'next/link';
 import { 
   Tv, 
   Users, 
@@ -355,15 +356,17 @@ export default function Tetris() {
   };
 
   // Merges block into grid upon bottom contact
-  const mergePiece = useCallback(() => {
+  const mergePiece = useCallback((customY) => {
     if (!currentPiece) return;
+
+    const targetY = customY !== undefined ? customY : position.y;
 
     let newBoard = board.map(row => [...row]);
     for (let r = 0; r < currentPiece.shape.length; r++) {
       for (let c = 0; c < currentPiece.shape[r].length; c++) {
         if (currentPiece.shape[r][c] !== 0) {
-          if (position.y + r >= 0) {
-            newBoard[position.y + r][position.x + c] = currentPiece.shape[r][c];
+          if (targetY + r >= 0) {
+            newBoard[targetY + r][position.x + c] = currentPiece.shape[r][c];
           }
         }
       }
@@ -452,9 +455,9 @@ export default function Tetris() {
         while (!checkCollision(currentPiece, position.x, testY + 1, board)) {
           testY++;
         }
-        setPosition(prev => ({ ...prev, y: testY }));
+        setPosition({ x: position.x, y: testY });
         // Let gravity merge it in the next cycle, or merge instantly
-        mergePiece();
+        mergePiece(testY);
       }
     };
 
@@ -521,10 +524,10 @@ export default function Tetris() {
       {/* HEADER */}
       <header className="w-full max-w-6xl flex justify-between items-center mb-4 z-10">
         <div className="flex items-center gap-3">
-          <Tv className="w-8 h-8 text-cyan-400 animate-pulse" />
-          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-wider font-mono text-cyan-400">
-            TETRIS<span className="text-fuchsia-500">CLOUD</span>
-          </h1>
+          <Link href="/debug" className="flex items-center gap-2 px-3.5 py-2 rounded-xl glass-panel hover:text-cyan-400 text-xs font-semibold transition-all">
+            <Cpu className="w-4 h-4 text-cyan-400 animate-pulse" />
+            <span>AWS Console Debug</span>
+          </Link>
         </div>
 
         <div className="flex items-center gap-4">
@@ -590,87 +593,10 @@ export default function Tetris() {
         </main>
       ) : (
         /* GAME ARENA PLAYING SCREEN */
-        <main className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-start my-auto z-10">
-          
-          {/* LEFT SIDEBAR: AWS SYSTEM & METRICS STATUS */}
-          <section className="lg:col-span-3 flex flex-col gap-5 h-full">
-            {/* Health Monitor */}
-            <div className="glass-panel p-5 rounded-2xl border border-slate-800/80">
-              <h3 className="text-sm font-black tracking-widest text-slate-400 mb-4 uppercase flex items-center gap-2">
-                <Cpu className="w-4 h-4 text-cyan-400" />
-                AWS Cloud Console
-              </h3>
-              
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
-                  <div className="flex items-center gap-2 font-medium text-slate-400">
-                    <Zap className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>ALB Proxy Port 80</span>
-                  </div>
-                  {getStatusIcon(servicesStatus.proxy)}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
-                  <div className="flex items-center gap-2 font-medium text-slate-400">
-                    <Workflow className="w-3.5 h-3.5 text-fuchsia-400" />
-                    <span>API Service (ECS)</span>
-                  </div>
-                  {getStatusIcon(servicesStatus.api)}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
-                  <div className="flex items-center gap-2 font-medium text-slate-400">
-                    <Activity className="w-3.5 h-3.5 text-sky-400" />
-                    <span>Sockets (Tiempo Real)</span>
-                  </div>
-                  {getStatusIcon(servicesStatus.websocket)}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
-                  <div className="flex items-center gap-2 font-medium text-slate-400">
-                    <Database className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>RDS PostgreSQL</span>
-                  </div>
-                  {getStatusIcon(servicesStatus.rds)}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
-                  <div className="flex items-center gap-2 font-medium text-slate-400">
-                    <Cpu className="w-3.5 h-3.5 text-red-400" />
-                    <span>ElastiCache Redis</span>
-                  </div>
-                  {getStatusIcon(servicesStatus.redis)}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-slate-900/30 text-xs">
-                  <div className="flex items-center gap-2 font-medium text-slate-400">
-                    <History className="w-3.5 h-3.5 text-amber-500" />
-                    <span>SQS Queue Broker</span>
-                  </div>
-                  {getStatusIcon(servicesStatus.sqs)}
-                </div>
-              </div>
-            </div>
-
-            {/* CloudWatch Serverless Logs Console */}
-            <div className="glass-panel p-5 rounded-2xl border border-slate-800/80 flex-grow flex flex-col">
-              <h3 className="text-xs font-black tracking-widest text-slate-400 mb-3 uppercase flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-cyan-400 animate-pulse" />
-                CloudWatch Logs
-              </h3>
-              
-              <div className="w-full flex-grow bg-black/50 border border-slate-900 rounded-lg p-3 font-mono text-[10px] text-emerald-400/90 h-[170px] lg:h-[190px] overflow-y-auto flex flex-col gap-1.5">
-                {awsConsoleLogs.map((log, idx) => (
-                  <div key={idx} className="leading-tight border-b border-slate-950 pb-1">
-                    {log}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
+        <main className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-10 gap-8 items-start my-auto z-10 justify-center mx-auto">
 
           {/* MAIN TETRIS GAME BOARD */}
-          <section className="lg:col-span-5 flex justify-center">
+          <section className="lg:col-span-6 flex justify-center">
             <div className="glass-panel p-4 rounded-2xl border border-slate-800/80 shadow-[0_0_50px_rgba(0,240,255,0.06)] relative">
               {/* Grid Canvas */}
               <div className="grid bg-slate-950/80 p-2.5 rounded-xl border border-slate-900/90" style={{ gridTemplateColumns: `repeat(${COLS}, minmax(26px, 32px))`, gridTemplateRows: `repeat(${ROWS}, minmax(26px, 32px))`, gap: '2px' }}>
@@ -792,18 +718,7 @@ export default function Tetris() {
         </main>
       )}
 
-      {/* FOOTER */}
-      <footer className="w-full max-w-6xl text-center text-slate-600 text-[10px] sm:text-xs z-10 border-t border-slate-900/60 pt-5 mt-6 flex flex-col sm:flex-row justify-between gap-4">
-        <span>© 2026 Tetris Cloud Corporation. AWS Local Simulation Sandbox Environment.</span>
-        <span className="flex items-center justify-center gap-1">
-          Powered by
-          <strong className="text-cyan-400 font-semibold">Nginx</strong>,
-          <strong className="text-fuchsia-400 font-semibold">Next.js</strong>,
-          <strong className="text-sky-400 font-semibold">Socket.io</strong>,
-          <strong className="text-emerald-400 font-semibold">Postgres</strong> &
-          <strong className="text-red-400 font-semibold">Redis</strong>
-        </span>
-      </footer>
+
     </div>
   );
 }
