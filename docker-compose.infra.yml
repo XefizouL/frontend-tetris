@@ -57,8 +57,9 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.tetris-api.rule=(Host(`tetris.localhost`) || Host(`tetris.prismabitetesting.xyz`)) && PathPrefix(`/api`)"
-      - "traefik.http.routers.tetris-api.priority=2"
+      - "traefik.http.routers.tetris-api.priority=10"
       - "traefik.http.services.tetris-api.loadbalancer.server.port=5000"
+      - "traefik.docker.network=infra-public"
 
   tetris-websocket:
     build:
@@ -76,8 +77,9 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.tetris-ws.rule=(Host(`tetris.localhost`) || Host(`tetris.prismabitetesting.xyz`)) && PathPrefix(`/socket.io`)"
-      - "traefik.http.routers.tetris-ws.priority=2"
+      - "traefik.http.routers.tetris-ws.priority=10"
       - "traefik.http.services.tetris-ws.loadbalancer.server.port=4000"
+      - "traefik.docker.network=infra-public"
 
   tetris-worker:
     build:
@@ -130,6 +132,7 @@ services:
       - "traefik.http.routers.tetris.rule=Host(`tetris.localhost`) || Host(`tetris.prismabitetesting.xyz`)"
       - "traefik.http.routers.tetris.priority=1"
       - "traefik.http.services.tetris.loadbalancer.server.port=3000"
+      - "traefik.docker.network=infra-public"
 
 networks:
   infra-public:

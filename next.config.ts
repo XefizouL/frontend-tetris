@@ -4,6 +4,7 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  allowedDevOrigins: ['tetris.prismabitetesting.xyz', 'tetris.localhost'],
 };
 
 export default nextConfig;
