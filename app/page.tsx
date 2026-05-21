@@ -49,6 +49,7 @@ const COLOR_MAP = {
   5: 'bg-green-500 border border-green-300 shadow-[0_0_8px_rgba(34,197,94,0.6)] tetris-cell',
   6: 'bg-purple-600 border border-purple-400 shadow-[0_0_8px_rgba(147,51,234,0.6)] tetris-cell',
   7: 'bg-red-600 border border-red-400 shadow-[0_0_8px_rgba(220,38,38,0.6)] tetris-cell',
+  8: 'bg-slate-800/10 border-2 border-dashed border-slate-600/50 shadow-[0_0_4px_rgba(255,255,255,0.1)] tetris-cell opacity-45', // Sombra (Ghost piece)
 };
 
 export default function Tetris() {
@@ -427,43 +428,135 @@ export default function Tetris() {
     }
   }, [currentPiece, position, board, gameOver, checkCollision]);
 
-  // Key listeners
+  // Refs to prevent stale closures in custom key repeat intervals
+  const gameOverRef = useRef(gameOver);
+  const currentPieceRef = useRef(currentPiece);
+  const isGameStartedRef = useRef(isGameStarted);
+  const positionRef = useRef(position);
+  const boardRef = useRef(board);
+  const checkCollisionRef = useRef(checkCollision);
+  const mergePieceRef = useRef(mergePiece);
+
+  const moveLeft = useCallback(() => moveHorizontal(-1), [moveHorizontal]);
+  const moveRight = useCallback(() => moveHorizontal(1), [moveHorizontal]);
+
+  const moveLeftRef = useRef(moveLeft);
+  const moveRightRef = useRef(moveRight);
+  const moveDownRef = useRef(moveDown);
+  const rotatePieceRef = useRef(rotatePiece);
+
+  useEffect(() => { gameOverRef.current = gameOver; }, [gameOver]);
+  useEffect(() => { currentPieceRef.current = currentPiece; }, [currentPiece]);
+  useEffect(() => { isGameStartedRef.current = isGameStarted; }, [isGameStarted]);
+  useEffect(() => { positionRef.current = position; }, [position]);
+  useEffect(() => { boardRef.current = board; }, [board]);
+  useEffect(() => { checkCollisionRef.current = checkCollision; }, [checkCollision]);
+  useEffect(() => { mergePieceRef.current = mergePiece; }, [mergePiece]);
+  useEffect(() => { moveLeftRef.current = moveLeft; }, [moveLeft]);
+  useEffect(() => { moveRightRef.current = moveRight; }, [moveRight]);
+  useEffect(() => { moveDownRef.current = moveDown; }, [moveDown]);
+  useEffect(() => { rotatePieceRef.current = rotatePiece; }, [rotatePiece]);
+
+  // Keep track of active intervals/timeouts for repeats
+  const keyIntervals = useRef({
+    ArrowLeft: null,
+    ArrowRight: null,
+    ArrowDown: null,
+  });
+
+  const startKeyRepeat = useCallback((key, actionRef, intervalMs, dasDelay = 150) => {
+    if (keyIntervals.current[key]) return; // Already repeating
+    
+    // Trigger immediately
+    actionRef.current();
+    
+    const active = { timeoutId: null, intervalId: null };
+    
+    active.timeoutId = setTimeout(() => {
+      active.intervalId = setInterval(() => {
+        actionRef.current();
+      }, intervalMs);
+    }, dasDelay);
+
+    keyIntervals.current[key] = active;
+  }, []);
+
+  const stopKeyRepeat = useCallback((key) => {
+    const active = keyIntervals.current[key];
+    if (active) {
+      clearTimeout(active.timeoutId);
+      if (active.intervalId) {
+        clearInterval(active.intervalId);
+      }
+      keyIntervals.current[key] = null;
+    }
+  }, []);
+
+  // Stop repeats if component loses focus or game state resets
+  useEffect(() => {
+    const handleBlur = () => {
+      stopKeyRepeat('ArrowLeft');
+      stopKeyRepeat('ArrowRight');
+      stopKeyRepeat('ArrowDown');
+    };
+    window.addEventListener('blur', handleBlur);
+    return () => window.removeEventListener('blur', handleBlur);
+  }, [stopKeyRepeat]);
+
+  useEffect(() => {
+    if (gameOver || !isGameStarted || !currentPiece) {
+      stopKeyRepeat('ArrowLeft');
+      stopKeyRepeat('ArrowRight');
+      stopKeyRepeat('ArrowDown');
+    }
+  }, [gameOver, isGameStarted, currentPiece, stopKeyRepeat]);
+
+  // Key listeners with dynamic repeat acceleration
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (gameOver || !currentPiece || !isGameStarted) return;
+      if (gameOverRef.current || !currentPieceRef.current || !isGameStartedRef.current) return;
 
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        moveHorizontal(-1);
+        startKeyRepeat('ArrowLeft', moveLeftRef, 50, 160);
       }
       if (e.key === 'ArrowRight') {
         e.preventDefault();
-        moveHorizontal(1);
+        startKeyRepeat('ArrowRight', moveRightRef, 50, 160);
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        moveDown();
+        startKeyRepeat('ArrowDown', moveDownRef, 40, 90);
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        rotatePiece();
+        rotatePieceRef.current();
       }
       if (e.key === ' ') {
         e.preventDefault();
         // Hard drop
-        let testY = position.y;
-        while (!checkCollision(currentPiece, position.x, testY + 1, board)) {
+        let testY = positionRef.current.y;
+        while (!checkCollisionRef.current(currentPieceRef.current, positionRef.current.x, testY + 1, boardRef.current)) {
           testY++;
         }
-        setPosition({ x: position.x, y: testY });
-        // Let gravity merge it in the next cycle, or merge instantly
-        mergePiece(testY);
+        setPosition({ x: positionRef.current.x, y: testY });
+        mergePieceRef.current(testY);
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        stopKeyRepeat(e.key);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPiece, position, board, gameOver, isGameStarted, moveHorizontal, moveDown, rotatePiece, checkCollision, mergePiece]);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [startKeyRepeat, stopKeyRepeat]);
 
   // Game Gravitational loop
   useEffect(() => {
@@ -473,9 +566,36 @@ export default function Tetris() {
     }
   }, [moveDown, isGameStarted, gameOver, currentPiece]);
 
-  // Combined render grid
+  // Combined render grid with Ghost Piece (Sombra) rendering
   const getRenderBoard = () => {
     let renderBoard = board.map(row => [...row]);
+    
+    if (currentPiece && isGameStarted && !gameOver) {
+      // 1. Calculate drop coordinate for ghost piece
+      let ghostY = position.y;
+      while (!checkCollision(currentPiece, position.x, ghostY + 1, board)) {
+        ghostY++;
+      }
+      
+      // 2. Overlay ghost piece onto empty board tiles
+      if (ghostY > position.y) {
+        for (let r = 0; r < currentPiece.shape.length; r++) {
+          for (let c = 0; c < currentPiece.shape[r].length; c++) {
+            if (currentPiece.shape[r][c] !== 0) {
+              let y = ghostY + r;
+              let x = position.x + c;
+              if (y >= 0 && y < ROWS && x >= 0 && x < COLS) {
+                if (board[y][x] === 0) {
+                  renderBoard[y][x] = 8; // Special index for shadow piece
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Overlay the active falling piece
     if (currentPiece) {
       for (let r = 0; r < currentPiece.shape.length; r++) {
         for (let c = 0; c < currentPiece.shape[r].length; c++) {

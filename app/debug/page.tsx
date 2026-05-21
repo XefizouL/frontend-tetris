@@ -21,9 +21,10 @@ import {
 
 export default function DebugDashboard() {
   const [activeUsers, setActiveUsers] = useState(1);
+  const [selectedService, setSelectedService] = useState<string | null>(null);
   const [awsConsoleLogs, setAwsConsoleLogs] = useState([
-    'Initializing local AWS Stack simulation...',
-    'ALB Proxy listening on port 80...',
+    '[PROXY] Initializing local AWS Stack simulation...',
+    '[PROXY] ALB Proxy listening on port 80...',
   ]);
   const [servicesStatus, setServicesStatus] = useState({
     proxy: 'checking',
@@ -41,7 +42,6 @@ export default function DebugDashboard() {
     const timestamp = new Date().toISOString().substring(11, 19);
     setAwsConsoleLogs(prev => [`[${timestamp}] ${msg}`, ...prev].slice(0, 45));
   }, []);
-
   // Poll AWS Local Services Health
   const checkHealth = useCallback(async () => {
     try {
@@ -56,6 +56,9 @@ export default function DebugDashboard() {
           redis: data.services.cache === 'ok' ? 'ok' : 'error',
           sqs: 'ok'
         });
+        logAwsEvent('[API] GET /api/health -> Healthy status check response received');
+        logAwsEvent(`[RDS] Database status check -> ${data.services.database === 'ok' ? 'Connected successfully' : 'Connection failed'}`);
+        logAwsEvent(`[REDIS] ElastiCache Redis check -> ${data.services.cache === 'ok' ? 'Healthy cache hit rate' : 'Cache connection down'}`);
       } else {
         throw new Error('API down');
       }
@@ -68,8 +71,9 @@ export default function DebugDashboard() {
         redis: 'error',
         sqs: 'error'
       });
+      logAwsEvent('[PROXY] ELB Gateway Error: API service unreachable');
     }
-  }, []);
+  }, [logAwsEvent]);
 
   // Initialize WebSockets and Health Checks
   useEffect(() => {
@@ -83,13 +87,13 @@ export default function DebugDashboard() {
 
     socket.on('connect', () => {
       console.log('Connected to real-time ECS WebSocket service');
-      logAwsEvent('ECS WebSocket server connection established (Port 80 routing)');
+      logAwsEvent('[WEBSOCKET] ECS WebSocket server connection established (Port 80 routing)');
       setServicesStatus(prev => ({ ...prev, websocket: 'ok' }));
     });
 
     socket.on('disconnect', () => {
       console.log('Disconnected from WebSockets');
-      logAwsEvent('ECS WebSocket connection terminated');
+      logAwsEvent('[WEBSOCKET] ECS WebSocket connection terminated');
       setServicesStatus(prev => ({ ...prev, websocket: 'error' }));
     });
 
@@ -98,11 +102,14 @@ export default function DebugDashboard() {
     });
 
     socket.on('arena_notification', (data) => {
-      logAwsEvent(`WS Broadcast event [${data.type}]: ${data.nombre || 'Arena'} - Score: ${data.score || ''}`);
+      if (data.type === 'game_over') {
+        logAwsEvent(`[SQS] Event consumed: game_over for player '${data.nombre || 'Invitado'}' with score ${data.score || 0}`);
+      }
+      logAwsEvent(`[WEBSOCKET] WS Broadcast event [${data.type}]: ${data.nombre || 'Arena'} - Score: ${data.score || ''}`);
     });
 
     socket.on('connect_error', () => {
-      logAwsEvent('ECS WebSocket connection error');
+      logAwsEvent('[WEBSOCKET] ECS WebSocket connection error');
       setServicesStatus(prev => ({ ...prev, websocket: 'error' }));
     });
 
@@ -117,12 +124,26 @@ export default function DebugDashboard() {
       clearInterval(healthInterval);
     };
   }, [checkHealth, logAwsEvent]);
-
   const getStatusIcon = (status: string) => {
     if (status === 'ok') return <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1 shadow-[0_0_8px_rgba(16,185,129,0.2)]">● Online</span>;
     if (status === 'error') return <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-red-500/10 border border-red-500/30 text-red-400 flex items-center gap-1 shadow-[0_0_8px_rgba(239,68,68,0.2)]">▲ Offline</span>;
     return <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center gap-1 animate-pulse">■ Checking</span>;
   };
+
+  const getServiceClass = (serviceKey: string) => {
+    const isSelected = selectedService === serviceKey;
+    const baseClass = "flex items-center justify-between py-3 px-4 rounded-xl border cursor-pointer transition-all duration-300 ";
+    if (isSelected) {
+      return baseClass + "bg-cyan-500/10 border-cyan-500/60 text-cyan-300 shadow-[0_0_15px_rgba(6,182,212,0.2)] font-bold scale-[1.02]";
+    }
+    return baseClass + "bg-slate-950/40 border-slate-900/60 hover:border-slate-800 hover:bg-slate-950/70 hover:scale-[1.01] text-slate-400 hover:text-slate-200";
+  };
+
+  const filteredLogs = awsConsoleLogs.filter(log => {
+    if (!selectedService) return true;
+    const searchTag = selectedService === 'websocket' ? '[WEBSOCKET]' : `[${selectedService.toUpperCase()}]`;
+    return log.includes(searchTag);
+  });
 
   return (
     <div className="relative min-h-screen flex flex-col items-center p-4 sm:p-6 md:p-8 bg-[#06060c] font-sans selection:bg-cyan-500 selection:text-slate-950">
@@ -155,54 +176,82 @@ export default function DebugDashboard() {
         {/* Left column: Microservices Info */}
         <section className="md:col-span-4 flex flex-col gap-6">
           <div className="glass-panel p-6 rounded-2xl border border-slate-800/80 shadow-lg">
-            <h2 className="text-lg font-black tracking-widest text-slate-200 mb-6 uppercase flex items-center gap-2 border-b border-slate-900 pb-3">
-              <Cpu className="w-5 h-5 text-cyan-400" />
-              AWS Cloud Console
-            </h2>
+            <div className="flex justify-between items-center mb-6 border-b border-slate-900 pb-3">
+              <h2 className="text-lg font-black tracking-widest text-slate-200 uppercase flex items-center gap-2">
+                <Cpu className="w-5 h-5 text-cyan-400 animate-pulse" />
+                AWS Cloud Console
+              </h2>
+              {selectedService && (
+                <button 
+                  onClick={() => setSelectedService(null)} 
+                  className="text-[10px] font-black text-cyan-400 hover:underline uppercase transition-all"
+                >
+                  Ver Todo
+                </button>
+              )}
+            </div>
 
-            <div className="flex flex-col gap-4">
-              <div className="flex items-center justify-between py-2 border-b border-slate-900/30 text-xs">
-                <div className="flex items-center gap-2.5 font-medium text-slate-400">
+            <div className="flex flex-col gap-3">
+              <div 
+                onClick={() => setSelectedService(selectedService === 'proxy' ? null : 'proxy')}
+                className={getServiceClass('proxy')}
+              >
+                <div className="flex items-center gap-2.5 font-medium">
                   <Zap className="w-4 h-4 text-cyan-400" />
                   <span>ALB Proxy Port 80</span>
                 </div>
                 {getStatusIcon(servicesStatus.proxy)}
               </div>
 
-              <div className="flex items-center justify-between py-2 border-b border-slate-900/30 text-xs">
-                <div className="flex items-center gap-2.5 font-medium text-slate-400">
+              <div 
+                onClick={() => setSelectedService(selectedService === 'api' ? null : 'api')}
+                className={getServiceClass('api')}
+              >
+                <div className="flex items-center gap-2.5 font-medium">
                   <Workflow className="w-4 h-4 text-fuchsia-400" />
                   <span>API Service (ECS)</span>
                 </div>
                 {getStatusIcon(servicesStatus.api)}
               </div>
 
-              <div className="flex items-center justify-between py-2 border-b border-slate-900/30 text-xs">
-                <div className="flex items-center gap-2.5 font-medium text-slate-400">
+              <div 
+                onClick={() => setSelectedService(selectedService === 'websocket' ? null : 'websocket')}
+                className={getServiceClass('websocket')}
+              >
+                <div className="flex items-center gap-2.5 font-medium">
                   <Activity className="w-4 h-4 text-sky-400" />
-                  <span>Sockets (ECS WebSocket)</span>
+                  <span>Sockets (ECS)</span>
                 </div>
                 {getStatusIcon(servicesStatus.websocket)}
               </div>
 
-              <div className="flex items-center justify-between py-2 border-b border-slate-900/30 text-xs">
-                <div className="flex items-center gap-2.5 font-medium text-slate-400">
+              <div 
+                onClick={() => setSelectedService(selectedService === 'rds' ? null : 'rds')}
+                className={getServiceClass('rds')}
+              >
+                <div className="flex items-center gap-2.5 font-medium">
                   <Database className="w-4 h-4 text-emerald-400" />
                   <span>RDS PostgreSQL</span>
                 </div>
                 {getStatusIcon(servicesStatus.rds)}
               </div>
 
-              <div className="flex items-center justify-between py-2 border-b border-slate-900/30 text-xs">
-                <div className="flex items-center gap-2.5 font-medium text-slate-400">
+              <div 
+                onClick={() => setSelectedService(selectedService === 'redis' ? null : 'redis')}
+                className={getServiceClass('redis')}
+              >
+                <div className="flex items-center gap-2.5 font-medium">
                   <Cpu className="w-4 h-4 text-red-400" />
                   <span>ElastiCache Redis</span>
                 </div>
                 {getStatusIcon(servicesStatus.redis)}
               </div>
 
-              <div className="flex items-center justify-between py-2 border-b border-slate-900/30 text-xs">
-                <div className="flex items-center gap-2.5 font-medium text-slate-400">
+              <div 
+                onClick={() => setSelectedService(selectedService === 'sqs' ? null : 'sqs')}
+                className={getServiceClass('sqs')}
+              >
+                <div className="flex items-center gap-2.5 font-medium">
                   <History className="w-4 h-4 text-amber-500" />
                   <span>SQS Queue Broker</span>
                 </div>
@@ -224,25 +273,48 @@ export default function DebugDashboard() {
         <section className="md:col-span-8 flex flex-col">
           <div className="glass-panel p-6 rounded-2xl border border-slate-800/80 flex-grow flex flex-col shadow-lg">
             <div className="flex justify-between items-center mb-4 border-b border-slate-900 pb-3">
-              <h2 className="text-sm font-black tracking-widest text-slate-200 uppercase flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-cyan-400 animate-pulse" />
-                Amazon CloudWatch Logs
-              </h2>
-              <button 
-                onClick={() => setAwsConsoleLogs([`[${new Date().toISOString().substring(11, 19)}] Logs cleared manually.`])} 
-                className="text-[10px] font-bold text-slate-500 hover:text-slate-300 transition-colors uppercase"
-              >
-                Clear Log View
-              </button>
+              <div className="flex items-center gap-3">
+                <h2 className="text-sm font-black tracking-widest text-slate-200 uppercase flex items-center gap-2">
+                  <Terminal className="w-4 h-4 text-cyan-400 animate-pulse" />
+                  Amazon CloudWatch Logs
+                </h2>
+                {selectedService && (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 animate-pulse">
+                    Filtro: {selectedService.toUpperCase()}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-4 items-center">
+                {selectedService && (
+                  <button 
+                    onClick={() => setSelectedService(null)} 
+                    className="text-[10px] font-bold text-cyan-400 hover:text-cyan-300 transition-colors uppercase"
+                  >
+                    Ver Todo
+                  </button>
+                )}
+                <button 
+                  onClick={() => setAwsConsoleLogs([`[${new Date().toISOString().substring(11, 19)}] Logs cleared manually.`])} 
+                  className="text-[10px] font-bold text-slate-500 hover:text-slate-300 transition-colors uppercase"
+                >
+                  Clear Log View
+                </button>
+              </div>
             </div>
             
             <div className="w-full flex-grow bg-black/60 border border-slate-950 rounded-xl p-4 font-mono text-xs text-emerald-400/90 h-[480px] overflow-y-auto flex flex-col gap-2 shadow-inner">
-              {awsConsoleLogs.map((log, idx) => (
-                <div key={idx} className="leading-relaxed border-b border-slate-900/40 pb-2 flex gap-3">
-                  <span className="text-slate-600 flex-shrink-0 select-none">AWS-SYS-LOG &gt;</span>
-                  <span className="break-all">{log}</span>
+              {filteredLogs.length === 0 ? (
+                <div className="text-slate-600 text-center py-12 select-none italic">
+                  No hay logs registrados para este servicio aún.
                 </div>
-              ))}
+              ) : (
+                filteredLogs.map((log, idx) => (
+                  <div key={idx} className="leading-relaxed border-b border-slate-900/40 pb-2 flex gap-3 transition-all duration-300">
+                    <span className="text-slate-600 flex-shrink-0 select-none">AWS-SYS-LOG &gt;</span>
+                    <span className="break-all">{log}</span>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </section>
