@@ -1,0 +1,136 @@
+services:
+  tetris-db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: securepassword
+      POSTGRES_DB: tetris
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    networks:
+      - infra-public
+
+  adminer:
+    image: adminer
+    restart: always
+    networks:
+      - infra-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tetris-adminer.rule=Host(`db-tetris.localhost`) || Host(`db-tetris.prismabitetesting.xyz`)"
+      - "traefik.http.services.tetris-adminer.loadbalancer.server.port=8080"
+
+  tetris-cache:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - ./redisdata:/data
+    networks:
+      - infra-public
+
+  tetris-queue:
+    image: rabbitmq:3-management-alpine
+    restart: always
+    networks:
+      - infra-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tetris-queue.rule=Host(`queue-tetris.localhost`) || Host(`queue-tetris.prismabitetesting.xyz`)"
+      - "traefik.http.services.tetris-queue.loadbalancer.server.port=15672"
+
+  tetris-api:
+    build:
+      context: ./api
+    restart: always
+    environment:
+      PORT: 5000
+      DATABASE_URL: postgres://postgres:securepassword@tetris-db:5432/tetris
+      REDIS_URL: redis://tetris-cache:6379/0
+    depends_on:
+      - tetris-db
+      - tetris-cache
+    networks:
+      - infra-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tetris-api.rule=(Host(`tetris.localhost`) || Host(`tetris.prismabitetesting.xyz`)) && PathPrefix(`/api`)"
+      - "traefik.http.routers.tetris-api.priority=2"
+      - "traefik.http.services.tetris-api.loadbalancer.server.port=5000"
+
+  tetris-websocket:
+    build:
+      context: ./websocket
+    restart: always
+    environment:
+      PORT: 4000
+      REDIS_URL: redis://tetris-cache:6379/0
+      QUEUE_URL: amqp://guest:guest@tetris-queue:5672
+    depends_on:
+      - tetris-cache
+      - tetris-queue
+    networks:
+      - infra-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tetris-ws.rule=(Host(`tetris.localhost`) || Host(`tetris.prismabitetesting.xyz`)) && PathPrefix(`/socket.io`)"
+      - "traefik.http.routers.tetris-ws.priority=2"
+      - "traefik.http.services.tetris-ws.loadbalancer.server.port=4000"
+
+  tetris-worker:
+    build:
+      context: ./workers
+    restart: always
+    environment:
+      DATABASE_URL: postgres://postgres:securepassword@tetris-db:5432/tetris
+      QUEUE_URL: amqp://guest:guest@tetris-queue:5672
+    depends_on:
+      - tetris-db
+      - tetris-queue
+    networks:
+      - infra-public
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: always
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - infra-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tetris-prometheus.rule=Host(`prometheus-tetris.localhost`) || Host(`prometheus-tetris.prismabitetesting.xyz`)"
+      - "traefik.http.services.tetris-prometheus.loadbalancer.server.port=9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: always
+    depends_on:
+      - prometheus
+    networks:
+      - infra-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tetris-grafana.rule=Host(`grafana-tetris.localhost`) || Host(`grafana-tetris.prismabitetesting.xyz`)"
+      - "traefik.http.services.tetris-grafana.loadbalancer.server.port=3000"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      PORT: 3000
+    networks:
+      - infra-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tetris.rule=Host(`tetris.localhost`) || Host(`tetris.prismabitetesting.xyz`)"
+      - "traefik.http.routers.tetris.priority=1"
+      - "traefik.http.services.tetris.loadbalancer.server.port=3000"
+
+networks:
+  infra-public:
+    external: true
